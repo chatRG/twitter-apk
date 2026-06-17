@@ -1,3 +1,9 @@
+import os
+
+REPO = os.environ.get("GITHUB_REPOSITORY")
+if REPO is None:
+    raise EnvironmentError("GITHUB_REPOSITORY is not set")
+
 HEADERS = {
     "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
     "authorization": "Basic YXBpLWFwa3VwZGF0ZXI6cm01cmNmcnVVakt5MDRzTXB5TVBKWFc4",

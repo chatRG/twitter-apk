@@ -1,9 +1,9 @@
 from apkmirror import Version, Variant
 from build_variants import build_apks
-from download_bins import download_apkeditor, download_revanced_bins
+from download_bins import download_apkeditor, download_morphe_cli, download_release_asset
 import github
 from utils import panic, merge_apk, publish_release, report_to_telegram
-from download_bins import download_release_asset
+from constants import REPO
 import apkmirror
 import os
 import argparse
@@ -16,17 +16,22 @@ def get_latest_release(versions: list[Version]) -> Version | None:
 
 
 def process(latest_version: Version):
-    # get bundle and universal variant
     variants: list[Variant] = apkmirror.get_variants(latest_version)
 
     download_link: Variant | None = None
     for variant in variants:
-        if variant.is_bundle and variant.arcithecture == "universal":
+        if variant.is_bundle and variant.architecture == "universal":
             download_link = variant
             break
 
     if download_link is None:
-        raise Exception("Bundle not Found")
+        bundle_variants = [v for v in variants if v.is_bundle]
+        if not bundle_variants:
+            raise Exception("Bundle not Found")
+
+        fallback = next((v for v in bundle_variants if v.architecture == "arm64-v8a"), None)
+        download_link = fallback or bundle_variants[0]
+        print(f"Universal bundle not found, falling back to {download_link.architecture}")
 
     apkmirror.download_apk(download_link)
     if not os.path.exists("big_file.apkm"):
@@ -39,27 +44,16 @@ def process(latest_version: Version):
     else:
         print("apkm is already merged")
 
-    download_revanced_bins()
+    download_morphe_cli(include_prereleases=True)
 
     print("Downloading patches")
     pikoRelease = download_release_asset(
-        "crimera/piko", "^piko.*jar$", "bins", "patches.jar"
+        "crimera/piko", "^patches.*mpp$", "bins", "patches.mpp", include_prereleases=True
     )
-
-    print("Downloading integrations")
-    integrationsRelease = download_release_asset(
-        "crimera/revanced-integrations",
-        "^rev.*apk$",
-        "bins",
-        "integrations.apk",
-    )
-
-    print(integrationsRelease["body"])
 
     message: str = f"""
 Changelogs:
 [piko-{pikoRelease["tag_name"]}]({pikoRelease["html_url"]})
-[integrations-{integrationsRelease["tag_name"]}]({integrationsRelease["html_url"]})
 """
 
     build_apks(latest_version)
@@ -76,13 +70,13 @@ Changelogs:
         latest_version.version
     )
 
-    report_to_telegram()
+    report_to_telegram(tag=latest_version.version)
 
 
 def main():
     # get latest version
     url: str = "https://www.apkmirror.com/apk/x-corp/twitter/"
-    repo_url: str = "crimera/twitter-apk"
+    repo_url: str = REPO
 
     versions = apkmirror.get_versions(url)
 
@@ -108,7 +102,7 @@ def main():
     else:
         print("No new version found")
         return
-    
+
     process(latest_version)
 
 
@@ -123,10 +117,10 @@ if __name__ == "__main__":
     # 0 = auto; 1 = manual;
     parser.add_argument('--m', action="store", dest='mode', default=0)
     parser.add_argument('--v', action="store", dest='version', default=0)
-    
+
     args = parser.parse_args()
     mode = args.mode
-    
+
     if not mode: # auto
         main()
     else: # manual

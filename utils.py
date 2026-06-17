@@ -1,9 +1,23 @@
 import os
 import shutil
-import requests
 import subprocess
 import sys
-from github import get_last_build_version
+
+import requests
+from constants import REPO
+from github import get_last_build_version, get_release_by_tag
+
+_scraper = None
+
+def get_scraper():
+    global _scraper
+    if _scraper is None:
+        import cloudscraper
+        _scraper = cloudscraper.create_scraper()
+        _scraper.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        })
+    return _scraper
 
 
 def panic(message: str):
@@ -22,17 +36,22 @@ def send_message(message: str, token: str, chat_id: str, thread_id: str):
         "chat_id": chat_id,
     }
 
-    requests.post(endpoint, data=data)
+    response = requests.post(endpoint, data=data)
+    response.raise_for_status()
 
 
-def report_to_telegram():
+def report_to_telegram(tag: str | None = None):
     tg_token = os.environ["TG_TOKEN"]
     tg_chat_id = os.environ["TG_CHAT_ID"]
     tg_thread_id = os.environ["TG_THREAD_ID"]
-    release = get_last_build_version("crimera/twitter-apk")
+
+    release = get_release_by_tag(REPO, tag) if tag else get_last_build_version(REPO)
+
+    if release is None and tag:
+        raise RuntimeError(f"Could not fetch release for tag: {tag}")
 
     if release is None:
-        raise Exception("Could not fetch release")
+        raise RuntimeError("Could not fetch latest release")
 
     downloads = [
         f"[{asset.name}]({asset.browser_download_url})" for asset in release.assets
@@ -51,17 +70,27 @@ def report_to_telegram():
     send_message(message, tg_token, tg_chat_id, tg_thread_id)
 
 
-def download(link, out, headers=None):
+def download(link, out, headers=None, use_scraper=False):
+    dir_name = os.path.dirname(out)
+    if dir_name:
+        os.makedirs(dir_name, exist_ok=True)
+
     if os.path.exists(out):
         print(f"{out} already exists skipping download")
         return
 
+    if use_scraper:
+        print(f"Downloading with scraper: {link}")
+
+    session = get_scraper() if use_scraper else requests
+
     # https://www.slingacademy.com/article/python-requests-module-how-to-download-files-from-urls/#Streaming_Large_Files
-    with requests.get(link, stream=True, headers=headers) as r:
+    with session.get(link, stream=True, headers=headers) as r:
         r.raise_for_status()
         with open(out, "wb") as f:
             for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
+                if chunk:
+                    f.write(chunk)
 
 
 def run_command(command: list[str]):
@@ -77,13 +106,12 @@ def run_command(command: list[str]):
 
 def merge_apk(path: str):
     subprocess.run(
-        ["java", "-jar", "./bins/apkeditor.jar", "m", "-i", path]
+        ["java", "-jar", "./bins/apkeditor.jar", "m", "-extractNativeLibs", "true", "-i", path]
     ).check_returncode()
 
 
 def patch_apk(
     cli: str,
-    integrations: str,
     patches: str,
     apk: str,
     includes: list[str] | None = None,
@@ -95,10 +123,8 @@ def patch_apk(
         "-jar",
         cli,
         "patch",
-        "-b",
+        "-p",
         patches,
-        "-m",
-        integrations,
         # use j-hc's keystore so we wouldn't need to reinstall
         "--keystore",
         "ks.keystore",
@@ -114,12 +140,12 @@ def patch_apk(
 
     if includes is not None:
         for i in includes:
-            command.append("-i")
+            command.append("-e")
             command.append(i)
 
     if excludes is not None:
         for e in excludes:
-            command.append("-e")
+            command.append("-d")
             command.append(e)
 
     command.append(apk)
